@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
+import { useTTS } from "@/hooks/useTTS";
 import axios from 'axios';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
@@ -70,9 +71,39 @@ type SpeechRecognitionInstance = {
 };
 
 export default function SpeechRecognitionComponent() {
+  const { stopTTS } = useTTS();
   const [isRecording, setIsRecording] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [conversation, setConversation] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
+  const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Request camera access and start video stream
+  const startVideo = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      setVideoStream(stream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (err) {
+      console.error('Error accessing camera:', err);
+      toast({
+        title: "Camera Error",
+        description: "Unable to access camera. Please check permissions.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Clean up video stream on component unmount
+  useEffect(() => {
+    return () => {
+      if (videoStream) {
+        videoStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [videoStream]);
   const [isProcessing, setIsProcessing] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const speechRecognitionRef = useRef<SpeechRecognitionInstance | null>(null);
@@ -189,35 +220,7 @@ export default function SpeechRecognitionComponent() {
   
       // Update the UI
       setConversation(prev => [...prev, { role: 'assistant', content: assistantText }]);
-  
-      // Play the response using TTS
-      try {
-        const audioContext = getAudioContext();
-        const response = await fetch(`${import.meta.env.VITE_TTS_SERVER_URL}/speak`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ text: assistantText }),
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error('TTS request failed: ' + errorText);
-        }
-
-        // Handle the audio file response
-        const blob = await response.blob();
-        const audioBuffer = await audioContext.decodeAudioData(await blob.arrayBuffer());
-        await playAudioBuffer(audioContext, audioBuffer);
-      } catch (ttsError) {
-        console.error('TTS Error:', ttsError);
-        toast({
-          title: "Error",
-          description: "Failed to play audio response: " + (ttsError instanceof Error ? ttsError.message : String(ttsError)),
-          variant: "destructive",
-        });
-      }
+      speakText(assistantText);
 
     } catch (error) {
       console.error("Gemini Error:", error);
@@ -230,6 +233,63 @@ export default function SpeechRecognitionComponent() {
       setIsProcessing(false);
     }
   };
+
+  const speakText = (text: string) => {
+    const synth = window.speechSynthesis;
+    const voiceReady = () =>
+      new Promise<void>((resolve) => {
+        if (synth.getVoices().length > 0) return resolve();
+        synth.onvoiceschanged = () => resolve();
+      });
+
+    const chunkText = (text: string): string[] => {
+      return text.match(/[^.!?]+[.!?]*/g) || [text]; // split into sentences
+    };
+
+    const speakChunk = (chunk: string): Promise<void> =>
+      new Promise((resolve) => {
+        // Pause speech recognition while speaking
+        if (speechRecognitionRef.current) {
+          speechRecognitionRef.current.stop();
+        }
+
+        const utterance = new SpeechSynthesisUtterance(chunk.trim());
+        const voices = synth.getVoices();
+        utterance.voice = voices.find((v) => v.lang === "en-US" && v.name.includes("Google")) || voices[0];
+        utterance.rate = 1;
+        utterance.pitch = 1;
+        utterance.volume = 1;
+
+        // Restart speech recognition when speech ends
+        utterance.onend = () => {
+          if (speechRecognitionRef.current) {
+            speechRecognitionRef.current.start();
+          }
+          resolve();
+        };
+
+        utterance.onerror = (e) => {
+          console.error("Speech error:", e.error);
+          if (speechRecognitionRef.current) {
+            speechRecognitionRef.current.start();
+          }
+          resolve(); // continue on error
+        };
+
+        synth.speak(utterance);
+      });
+
+  (async () => {
+    await voiceReady();
+    synth.cancel(); // clear any pending speech
+    const chunks = chunkText(text);
+    for (let chunk of chunks) {
+      await speakChunk(chunk);
+    }
+  })();
+  };
+  
+  
 
   const handleError = (event: SpeechRecognitionErrorEvent) => {
     console.error('Speech recognition error:', event.error);
@@ -255,27 +315,77 @@ export default function SpeechRecognitionComponent() {
   };
 
   const startRecording = () => {
-    if (!speechRecognitionRef.current) return;
+    if (!speechRecognitionRef.current) {
+      toast({
+        title: "Error",
+        description: "Speech recognition is not initialized",
+        variant: "destructive",
+      });
+      return;
+    }
 
     try {
       setIsRecording(true);
       
+      // Clear any existing timeouts
       if (recognitionTimeoutRef.current) {
         clearTimeout(recognitionTimeoutRef.current);
       }
-      recognitionTimeoutRef.current = setTimeout(() => {
+
+      // Start video if not already started
+      if (!videoStream) {
+        startVideo();
+      }
+
+      // Set up continuous listening with error handling
+      const continuousListening = () => {
         if (speechRecognitionRef.current) {
-          speechRecognitionRef.current.stop();
+          speechRecognitionRef.current.onend = () => {
+            // Restart recognition immediately when it ends
+            if (isRecording) {
+              speechRecognitionRef.current.start();
+            }
+          };
+
+          // Handle errors by restarting
+          speechRecognitionRef.current.onerror = (event) => {
+            console.error('Speech recognition error:', event.error);
+            if (event.error === 'no-speech' && isRecording) {
+              // Try to restart after a short delay
+              setTimeout(() => {
+                if (speechRecognitionRef.current) {
+                  speechRecognitionRef.current.start();
+                }
+              }, 1000);
+            }
+          };
+
+          // Stop any ongoing TTS before starting recognition
+          stopTTS();
+          
+          // Start recognition
           speechRecognitionRef.current.start();
         }
-      }, 60000);
+      };
 
-      speechRecognitionRef.current.start();
-      
+      continuousListening();
+
+      // Set up a safety timeout for 59 minutes (just under 1 hour)
+      recognitionTimeoutRef.current = setTimeout(() => {
+        if (speechRecognitionRef.current && isRecording) {
+          // Stop and restart to prevent potential memory leaks
+          speechRecognitionRef.current.stop();
+          setTimeout(() => {
+            startRecording(); // Restart the process
+          }, 1000);
+        }
+      }, 59 * 60 * 1000); // 59 minutes
+
       toast({
         title: "Recording Started",
-        description: "Listening with Web Speech API...",
+        description: "Continuous listening and video enabled...",
       });
+
     } catch (err) {
       console.error("Recording error:", err);
       toast({
@@ -305,58 +415,65 @@ export default function SpeechRecognitionComponent() {
   };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-4">
-      <div className="max-w-4xl w-full bg-gray-800/50 backdrop-blur-lg rounded-2xl border border-gray-700 shadow-lg p-6 space-y-6">
-        <div className="flex flex-col space-y-2">
-          <Button
-            onClick={startRecording}
-            disabled={isRecording || isLoading}
-            className="w-full h-12"
-          >
-            <Mic className="h-5 w-5 mr-2" />
-            <span className="font-semibold">Start Recording</span>
-          </Button>
-          <Button
-            variant="outline"
-            onClick={stopRecording}
-            disabled={!isRecording || isLoading}
-            className="w-full h-12"
-          >
-            <MicOff className="h-5 w-5 mr-2" />
-            <span className="font-semibold">Stop Recording</span>
-          </Button>
+    <div className="flex flex-col min-h-screen">
+    {/* 🔵 Top Bar */}
+    <div className="bg-purple-700 text-white text-lg font-semibold px-6 py-4 shadow-md">
+      PrepWise
+    </div>
+
+    {/* Main Layout */}
+    <div className="flex flex-col md:flex-row flex-1 bg-white">
+      {/* 🤖 Bot Section */}
+      <div className="w-full md:w-1/2 flex flex-col items-center justify-center bg-purple-100 p-8 relative">
+        {/* Bot Icon */}
+        <div className="w-64 h-64 bg-white rounded-full shadow-xl flex items-center justify-center relative">
+        <img src="/aiavatar.png" alt="AI Avatar" className="w-full h-full object-contain mt-8" />
         </div>
-        {/* <h1 className="text-4xl font-bold text-white tracking-tight">Voice Assistant</h1> */}
-        <p className="text-gray-400 text-center text-sm">Real-time speech recognition powered by Web Speech API</p>
-        <div className="space-y-3 max-h-[400px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-700/50 pr-2">
-          {conversation.map((message, index) => (
-            <div key={index} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} transition-all duration-200`}>
-              <div className={`rounded-lg p-3 max-w-[80%] ${
-                message.role === 'user' ? 'bg-blue-500/20 text-blue-500' : 'bg-purple-500/20 text-purple-500'
-              }`}>
-                <div className="flex flex-col">
-                  <span className="text-xs text-gray-400 mb-1">{message.role === 'user' ? 'You' : 'Assistant'}</span>
-                  <p className="text-sm break-words whitespace-pre-wrap">{message.content}</p>
-                </div>
-              </div>
-            </div>
-          ))}
+
+        {/* Speak Button */}
+        <div className="mt-6">
+          <Button  onClick={startRecording} className="text-lg px-6 py-2">🎙️ Speak</Button>
         </div>
-        <div className="text-xs text-gray-400 mt-8">
-          <div className="flex flex-col items-center space-y-4 pt-4 pb-6 border-b border-gray-700/50">
-            <p className="flex items-center space-x-2">
-              <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
-              <span>Listening...</span>
-            </p>
-            <p className="flex items-center space-x-2">
-              <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-              <span>Ready to speak</span>
-            </p>
+
+        {/* Recording Video Box */}
+        {/* <div className="absolute top-4 right-4">
+          <div className="w-32 h-40 bg-black rounded-xl overflow-hidden shadow-lg relative">
+            <video
+              ref={videoRef}
+              autoPlay
+              muted
+              className="w-full h-full object-cover"
+              playsInline
+            />
+            <div className="absolute bottom-0 w-full text-xs text-white text-center bg-red-600 py-1">● Recording Video</div>
           </div>
+        </div> */}
+      </div>
+
+      {/* 💬 Chat Section */}
+      <div className="w-full md:w-1/2 h-full overflow-y-auto px-6 py-8 space-y-4 relative">
+        {conversation.map((msg, index) => (
+          <div key={index} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div
+              className={`max-w-[80%] rounded-xl px-4 py-3 shadow-md text-sm whitespace-pre-wrap ${
+                msg.role === "user"
+                  ? "bg-gray-100 text-gray-800"
+                  : "bg-purple-100 text-purple-800"
+              }`}
+            >
+              <p>{msg.content}</p>
+            </div>
+          </div>
+        ))}
+
+        {/* End Message Note */}
+        <div className="text-center text-xs text-gray-500 pt-4 border-t border-gray-200 mt-6">
+          Click this button only if you have completed the interview.<br />
+          Once clicked, the interview will end and cannot be resumed.
         </div>
       </div>
-      <audio ref={audioRef} style={{ display: 'none' }} /> {/* Hidden audio player */}
     </div>
+  </div>
   );
 };
 
