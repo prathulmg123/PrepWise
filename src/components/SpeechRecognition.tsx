@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { useTTS } from "@/hooks/useTTS";
 import axios from 'axios';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
@@ -71,7 +70,6 @@ type SpeechRecognitionInstance = {
 };
 
 export default function SpeechRecognitionComponent() {
-  const { stopTTS } = useTTS();
   const [isRecording, setIsRecording] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [conversation, setConversation] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
@@ -360,9 +358,6 @@ export default function SpeechRecognitionComponent() {
             }
           };
 
-          // Stop any ongoing TTS before starting recognition
-          stopTTS();
-          
           // Start recognition
           speechRecognitionRef.current.start();
         }
