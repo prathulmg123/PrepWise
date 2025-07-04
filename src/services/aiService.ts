@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-interface AIAnalysisResponse {
+export interface AIAnalysisResponse {
   matchScore: number;
   skillsMatch: Record<string, boolean>;
   experienceMatch: Record<string, boolean>;

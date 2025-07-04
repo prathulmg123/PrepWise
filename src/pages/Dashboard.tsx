@@ -1,10 +1,6 @@
 import { useState } from 'react';
-import Sidebar from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import Modal from "@/components/Modal";
-import LinkedInSearch from "@/components/LinkedInSearch";
-import ResumeAnalyzer from "@/components/ResumeAnalyzer";
-import { FaHome, FaUser, FaChartBar, FaCog } from 'react-icons/fa';
 
 const tabs = ['Recently Viewed', 'Shared Files', 'Shared Projects'];
 
