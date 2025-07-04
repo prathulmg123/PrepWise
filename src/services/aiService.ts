@@ -22,45 +22,58 @@ export class AIService {
   private static gemini = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
   private static model = this.gemini.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
-  static async analyzeResume(requirements: string, resumeContent: string): Promise<AIAnalysisResponse> {
-    try {
-      const prompt = `
-        Analyze the following resume content against the job requirements:
-        
-        Job Requirements:
-        ${requirements}
-        
-        Resume Content:
-        ${resumeContent}
-        
-        Please provide a detailed analysis including:
-        1. Match Score (0-100)
-        2. Skills Match (list of required skills with boolean match)
-        3. Experience Match (list of required experience with boolean match)
-        4. Relevant Projects (with technologies, match score, and description)
-        5. Recommendations for improvement
-        6. Interview Questions (with difficulty and category)
-        
-        Format the response as JSON:
-        {
-          "matchScore": number,
-          "skillsMatch": { "skill": boolean },
-          "experienceMatch": { "experience": boolean },
-          "projects": [...],
-          "recommendations": [...],
-          "interviewQuestions": [...]
+  static async analyzeResume(requirements: string, resumeContent: string, maxRetries = 3, retryDelay = 1000): Promise<AIAnalysisResponse> {
+    let currentRetry = 0;
+    
+    while (currentRetry < maxRetries) {
+      try {
+        const prompt = `
+          Analyze the following resume content against the job requirements:
+          
+          Job Requirements:
+          ${requirements}
+          
+          Resume Content:
+          ${resumeContent}
+          
+          Please provide a detailed analysis including:
+          1. Match Score (0-100)
+          2. Skills Match (list of required skills with boolean match)
+          3. Experience Match (list of required experience with boolean match)
+          4. Relevant Projects (with technologies, match score, and description)
+          5. Recommendations for improvement
+          6. Interview Questions (with difficulty and category)
+          
+          Format the response as JSON:
+          {
+            "matchScore": number,
+            "skillsMatch": { "skill": boolean },
+            "experienceMatch": { "experience": boolean },
+            "projects": [...],
+            "recommendations": [...],
+            "interviewQuestions": [...]
+          }
+        `;
+
+        const result = await this.model.generateContent(prompt);
+        const response = await result.response;
+        const json = JSON.parse(response.text());
+
+        return json as AIAnalysisResponse;
+      } catch (error: any) {
+        if (error?.error?.code === 503 && currentRetry < maxRetries - 1) {
+          console.warn(`Retry ${currentRetry + 1}/${maxRetries} - Model overloaded, waiting ${retryDelay}ms`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          retryDelay *= 2; // Exponential backoff
+          currentRetry++;
+          continue;
         }
-      `;
-
-      const result = await this.model.generateContent(prompt);
-      const response = await result.response;
-      const json = JSON.parse(response.text());
-
-      return json as AIAnalysisResponse;
-    } catch (error) {
-      console.error('Error in Gemini analysis:', error);
-      throw error;
+        console.error('Error in Gemini analysis:', error);
+        throw error;
+      }
     }
+
+    throw new Error('Failed to get response after maximum retries');
   }
 
   static async extractResumeContent(file: File): Promise<string> {

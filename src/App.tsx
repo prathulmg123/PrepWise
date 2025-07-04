@@ -7,8 +7,9 @@ import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import Login from "./pages/Login";
 import SpeechRecognitionComponent from "./components/SpeechRecognition";
+import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
-
+import Schedule from "./pages/Schedule";
 
 const queryClient = new QueryClient();
 
@@ -22,10 +23,29 @@ const App = () => (
           <Route path="/" element={<Index />} />
           <Route path="/login" element={<Login />} />
           <Route path="/speech" element={<SpeechRecognitionComponent />} />
-          <Route path="/dashboard" element={<Dashboard onLogout={() => {
-  // Add any cleanup or state reset logic here
-  // For example, you might want to clear authentication state
-}} />} />
+          {/* Protected routes with Layout */}
+          <Route path="/dashboard" element={
+            <Layout onLogout={() => {
+              // Add any cleanup or state reset logic here
+              // For example, you might want to clear authentication state
+            }}>
+              <Dashboard onLogout={() => {
+                // Add any cleanup or state reset logic here
+                // For example, you might want to clear authentication state
+              }} />
+            </Layout>
+          } />
+          <Route path="/schedule" element={
+            <Layout onLogout={() => {
+              // Add any cleanup or state reset logic here
+              // For example, you might want to clear authentication state
+            }}>
+              <Schedule onLogout={() => {
+                // Add any cleanup or state reset logic here
+                // For example, you might want to clear authentication state
+              }} />
+            </Layout>
+          } />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

@@ -92,7 +92,6 @@ const Dashboard = ({ onLogout }: { onLogout: () => void }) => {
 
   return (
     <div className="flex min-h-screen bg-[#F9FAFB] text-gray-800">
-      <Sidebar onLogout={onLogout} />
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col overflow-hidden">
@@ -202,18 +201,6 @@ const Dashboard = ({ onLogout }: { onLogout: () => void }) => {
                 )}
               </div>
 
-              <div className="mt-6">
-                <ResumeAnalyzer
-                  requirements={employeeData.description}
-                  resumeFile={employeeData.resume}
-                  onAnalysisComplete={(analysis) => {
-                    // Here you would start the interview with your speech recognition system
-                    // Pass the analysis results to your AI interview system
-                    console.log('Starting interview with analysis:', analysis);
-                    setIsModalOpen(false);
-                  }}
-                />
-              </div>
             </div>
           </div>
         </Modal>
