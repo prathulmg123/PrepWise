@@ -1,0 +1,443 @@
+"use client";
+
+import React, { useState, useRef, useEffect } from "react";
+import { useLocation } from 'react-router-dom';
+import axios from 'axios';
+import { GoogleGenerativeAI } from "@google/generative-ai";
+const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
+
+// Utility function to get AudioContext constructor
+function getAudioContext(): AudioContext {
+  try {
+    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+    return new AudioContext();
+  } catch (e) {
+    throw new Error('Web Audio API is not supported in this browser');
+  }
+}
+
+// Function to play audio from buffer
+async function playAudioBuffer(audioContext: AudioContext, audioBuffer: AudioBuffer) {
+  const source = audioContext.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(audioContext.destination);
+  source.start();
+}
+
+import { Mic, MicOff, Volume2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { toast } from "@/hooks/use-toast";
+
+declare global {
+  interface Window {
+    SpeechRecognition: new () => SpeechRecognitionInstance;
+    webkitSpeechRecognition: new () => SpeechRecognitionInstance;
+  }
+}
+
+interface SpeechRecognitionResultList {
+  length: number;
+  [index: number]: SpeechRecognitionResult;
+}
+
+interface SpeechRecognitionResult {
+  [index: number]: SpeechRecognitionAlternative;
+  length: number;
+  isFinal: boolean;
+}
+
+interface SpeechRecognitionAlternative {
+  transcript: string;
+  confidence: number;
+}
+
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string;
+}
+
+type SpeechRecognitionInstance = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: (event: SpeechRecognitionEvent) => void;
+  onend: () => void;
+  onerror: (event: SpeechRecognitionErrorEvent) => void;
+  start: () => void;
+  stop: () => void;
+};
+
+export default function SpeechRecognitionComponent() {
+  const location = useLocation();
+  const [isRecording, setIsRecording] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [conversation, setConversation] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
+  const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
+  const [isInterviewStarted, setIsInterviewStarted] = useState(false);
+  const [questions, setQuestions] = useState<string[]>([]);
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const speechRecognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const recognitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const interviewContext = useRef({
+    jobDescription: '',
+    conversationHistory: ''
+  });
+
+  // Initialize speech recognition
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+      
+      recognition.onresult = (event) => {
+        let finalTranscript = '';
+        
+        // Process all results
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript;
+          }
+        }
+        
+        // If we have a final transcript, process it
+        if (finalTranscript) {
+          // Add user's response to conversation
+          setConversation(prev => [...prev, { role: 'user', content: finalTranscript }]);
+          
+          // Process the response with Gemini
+          processUserInput(finalTranscript).then(() => {
+            // Move to next question after a short delay
+            setTimeout(() => askQuestion(currentQuestionIndex + 1), 1000);
+          });
+        }
+      };
+      
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        if (event.error === 'not-allowed') {
+          toast({
+            title: "Microphone Access Denied",
+            description: "Please allow microphone access to use speech recognition.",
+            variant: "destructive",
+          });
+        }
+      };
+      
+      speechRecognitionRef.current = recognition;
+    }
+    
+    return () => {
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.stop();
+      }
+      if (recognitionTimeoutRef.current) {
+        clearTimeout(recognitionTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Initialize interview when component mounts
+  useEffect(() => {
+    if (location.state?.questions) {
+      setQuestions(location.state.questions);
+      interviewContext.current.jobDescription = location.state.jobDescription || '';
+      startInterview();
+    }
+  }, [location.state]);
+
+  // Start the interview
+  const startInterview = async () => {
+    if (questions.length === 0) return;
+    
+    setIsInterviewStarted(true);
+    
+    // Greet the user and ask the first question
+    await speakText("Hi, let's start the interview.");
+    await askQuestion(0);
+  };
+  
+  // Ask a specific question by index
+  const askQuestion = async (index: number) => {
+    if (index >= questions.length) {
+      // End of interview
+      await speakText("Thank you for completing the interview. We'll review your responses and get back to you soon.");
+      return;
+    }
+    
+    setCurrentQuestionIndex(index);
+    const question = questions[index];
+    
+    // Add question to conversation
+    setConversation(prev => [...prev, { role: 'assistant', content: question }]);
+    
+    // Speak the question
+    await speakText(question);
+  };
+
+  // Process user input with Gemini
+  const processUserInput = async (transcript: string) => {
+    console.log('Processing response with Gemini:', transcript);
+    setIsProcessing(true);
+  
+    try {
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      
+      // Create a prompt for Gemini to provide feedback on the response
+      const prompt = `You are conducting an interview. Here's the current question and the candidate's response:
+      Question: ${questions[currentQuestionIndex]}
+      Candidate's Response: ${transcript}
+      
+      Please provide a brief (1-2 sentence) acknowledgment or feedback on their response.`;
+  
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const feedback = response.text();
+  
+      console.log("Gemini Feedback:", feedback);
+      
+      // Update the UI with feedback
+      setConversation(prev => [...prev, { role: 'assistant', content: feedback }]);
+      await speakText(feedback);
+
+    } catch (error) {
+      console.error("Gemini Error:", error);
+      const errorMsg = "I had trouble processing your response. Let's continue with the next question.";
+      setConversation(prev => [...prev, { role: 'assistant', content: errorMsg }]);
+      await speakText(errorMsg);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Text-to-speech function
+  const speakText = async (text: string) => {
+    try {
+      const response = await fetch('https://texttospeech.googleapis.com/v1/text:synthesize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': import.meta.env.VITE_GOOGLE_TTS_API_KEY,
+        },
+        body: JSON.stringify({
+          input: { text },
+          voice: { languageCode: 'en-US', ssmlGender: 'NEUTRAL' },
+          audioConfig: { audioEncoding: 'MP3' },
+        }),
+      });
+
+      const data = await response.json();
+      const audioData = atob(data.audioContent);
+      const arrayBuffer = new ArrayBuffer(audioData.length);
+      const view = new Uint8Array(arrayBuffer);
+      
+      for (let i = 0; i < audioData.length; i++) {
+        view[i] = audioData.charCodeAt(i);
+      }
+      
+      const audioContext = getAudioContext();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      await playAudioBuffer(audioContext, audioBuffer);
+      
+    } catch (error) {
+      console.error('Error with text-to-speech:', error);
+    }
+  };
+
+  // Start/stop recording
+  const toggleRecording = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  };
+
+  const startRecording = () => {
+    if (!speechRecognitionRef.current) {
+      toast({
+        title: "Error",
+        description: "Speech recognition is not initialized",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      setIsRecording(true);
+      
+      // Clear any existing timeouts
+      if (recognitionTimeoutRef.current) {
+        clearTimeout(recognitionTimeoutRef.current);
+      }
+
+      // Start video if not already started
+      if (!videoStream) {
+        startVideo();
+      }
+
+      // Start recognition
+      speechRecognitionRef.current.start();
+
+      // Set up a safety timeout for 59 minutes (just under 1 hour)
+      recognitionTimeoutRef.current = setTimeout(() => {
+        if (speechRecognitionRef.current && isRecording) {
+          // Stop and restart to prevent potential memory leaks
+          speechRecognitionRef.current.stop();
+          setTimeout(() => {
+            startRecording(); // Restart the process
+          }, 1000);
+        }
+      }, 59 * 60 * 1000); // 59 minutes
+
+      toast({
+        title: "Recording Started",
+        description: "Continuous listening and video enabled...",
+      });
+
+    } catch (err) {
+      console.error("Recording error:", err);
+      toast({
+        title: "Microphone Error",
+        description: "Check microphone access permissions.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const stopRecording = () => {
+    setIsRecording(false);
+    if (speechRecognitionRef.current) {
+      speechRecognitionRef.current.stop();
+    }
+    if (recognitionTimeoutRef.current) {
+      clearTimeout(recognitionTimeoutRef.current);
+    }
+  };
+
+  // Start video stream
+  const startVideo = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      setVideoStream(stream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (err) {
+      console.error('Error accessing camera:', err);
+      toast({
+        title: "Camera Error",
+        description: "Unable to access camera. Please check permissions.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Clean up video stream on unmount
+  useEffect(() => {
+    return () => {
+      if (videoStream) {
+        videoStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [videoStream]);
+
+  return (
+    <div className="flex flex-col h-screen bg-gray-50">
+      {/* Header */}
+      <header className="bg-white shadow-sm py-4 px-6">
+        <h1 className="text-2xl font-bold text-gray-800">Interview Session</h1>
+      </header>
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* Video Feed */}
+        <div className="w-1/3 bg-black flex items-center justify-center">
+          {videoStream ? (
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <div className="text-white">Camera not available</div>
+          )}
+        </div>
+
+        {/* Chat Interface */}
+        <div className="flex-1 flex flex-col">
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto p-6 space-y-4">
+            {conversation.map((message, index) => (
+              <div
+                key={index}
+                className={`flex ${
+                  message.role === 'user' ? 'justify-end' : 'justify-start'
+                }`}
+              >
+                <div
+                  className={`max-w-3/4 rounded-lg px-4 py-2 ${
+                    message.role === 'user'
+                      ? 'bg-blue-500 text-white rounded-br-none'
+                      : 'bg-gray-200 text-gray-800 rounded-bl-none'
+                  }`}
+                >
+                  {message.content}
+                </div>
+              </div>
+            ))}
+            
+            {isProcessing && (
+              <div className="flex justify-start">
+                <div className="bg-gray-200 text-gray-800 rounded-lg px-4 py-2 rounded-bl-none">
+                  Processing your response...
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Controls */}
+          <div className="border-t border-gray-200 p-4 bg-white">
+            <div className="flex items-center justify-center space-x-4">
+              <Button
+                onClick={toggleRecording}
+                className={`flex items-center space-x-2 ${
+                  isRecording ? 'bg-red-500 hover:bg-red-600' : 'bg-blue-500 hover:bg-blue-600'
+                }`}
+              >
+                {isRecording ? (
+                  <>
+                    <MicOff className="h-5 w-5" />
+                    <span>Stop Recording</span>
+                  </>
+                ) : (
+                  <>
+                    <Mic className="h-5 w-5" />
+                    <span>Start Recording</span>
+                  </>
+                )}
+              </Button>
+              
+              <Button variant="outline" onClick={() => speakText(conversation[conversation.length - 1]?.content || '')}>
+                <Volume2 className="h-5 w-5 mr-2" />
+                Repeat
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

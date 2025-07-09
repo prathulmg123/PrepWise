@@ -29,6 +29,7 @@ const Schedule: React.FC = () => {
   const [jobDescription, setJobDescription] = useState('');
   const [geminiResponse, setGeminiResponse] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [interviewQuestions, setInterviewQuestions] = useState<string[]>([]);
 
   const triggerFileInput = () => {
     if (fileInputRef.current) fileInputRef.current.click();
@@ -46,6 +47,25 @@ const Schedule: React.FC = () => {
     console.log("isAnalyzing changed to:", isAnalyzing);
   }, [isAnalyzing]);
   
+  // Function to extract interview questions from the Gemini response
+  const extractInterviewQuestions = (response: string): string[] => {
+    // This regex looks for numbered questions (1., 2., etc.) followed by the question text
+    const questionRegex = /\n\s*\d+\.\s+(.+?)(?=\n\s*\d+\.|\n\s*$)/gs;
+    const matches = [...response.matchAll(questionRegex)];
+    
+    if (matches.length > 0) {
+      return matches.map(match => match[1].trim());
+    }
+    
+    // Fallback: If no numbered questions found, try to split by question marks
+    const fallbackQuestions = response
+      .split('?')
+      .filter(q => q.trim().length > 20) // Filter out short fragments
+      .map(q => q.trim() + '?');
+      
+    return fallbackQuestions.length > 0 ? fallbackQuestions : [];
+  };
+
   const handleAnalyze = async () => {
     if (!resumeFile || !jobDescription.trim()) {
       alert("Please upload a resume and enter job description.");
@@ -102,6 +122,10 @@ const Schedule: React.FC = () => {
   
           const geminiOutput = await result.response.text();
           setGeminiResponse(geminiOutput);
+          
+          // Extract interview questions from the response
+          const questions = extractInterviewQuestions(geminiOutput);
+          setInterviewQuestions(questions);
         } catch (err) {
           console.error("Gemini failed:", err);
           alert("Failed to analyze resume.");
@@ -204,6 +228,18 @@ const Schedule: React.FC = () => {
         </div>
       ))}
     </div>
+    
+    {/* Start Interview Button */}
+    {interviewQuestions.length > 0 && (
+      <div className="mt-6 flex justify-center">
+        <Button 
+          onClick={() => navigate('/speech', { state: { questions: interviewQuestions } })}
+          className="bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white py-6 px-8 text-lg font-semibold rounded-xl shadow-lg transform transition-all hover:scale-105"
+        >
+          🎤 Start Interview
+        </Button>
+      </div>
+    )}
   </div>
           )}
         </div>

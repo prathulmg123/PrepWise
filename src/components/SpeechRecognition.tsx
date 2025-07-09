@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import axios from 'axios';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
@@ -69,10 +70,19 @@ type SpeechRecognitionInstance = {
   stop: () => void;
 };
 
+interface InterviewState {
+  questions: string[];
+}
+
 export default function SpeechRecognitionComponent() {
+  const location = useLocation();
+  const { questions } = (location.state || { questions: [] }) as InterviewState;
   const [isRecording, setIsRecording] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [conversation, setConversation] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [isInterviewStarted, setIsInterviewStarted] = useState(false);
+  const [isInterviewComplete, setIsInterviewComplete] = useState(false);
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -203,21 +213,77 @@ export default function SpeechRecognitionComponent() {
     }
   };
 
+  const startInterview = async () => {
+    if (questions.length === 0) {
+      toast({
+        title: "No Questions",
+        description: "No interview questions were provided.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    setIsInterviewStarted(true);
+    const firstQuestion = questions[0];
+    const greeting = `Hi, Let's get started with your interview. Here's the first question: ${firstQuestion}`;
+    setConversation([{ role: 'assistant', content: greeting }]);
+    speakText(greeting);
+  };
+
   const processUserInput = async (transcript: string) => {
     console.log('Processing with Gemini:', transcript);
     setIsProcessing(true);
   
     try {
       const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-  
-      const result = await model.generateContent(transcript);
+      
+      let prompt = '';
+      let assistantText = '';
+      
+      // Add user's message to conversation
+      setConversation(prev => [...prev, { role: 'user', content: transcript }]);
+      
+      if (isInterviewComplete) {
+        // General conversation after interview
+        prompt = `The user said: "${transcript}"`;
+      } else if (questions && questions.length > 0) {
+        // Interview mode - just move to next question
+        if (currentQuestionIndex < questions.length - 1) {
+          // If there are more questions, prepare the next one
+          const nextQuestion = questions[Math.min(currentQuestionIndex + 1, questions.length - 1)];
+          prompt = `The candidate responded to the previous question. 
+          
+Now ask this question in a natural, conversational way: "${nextQuestion}"`;
+        } else {
+          // No more questions
+          prompt = `The interview is complete. Thank the candidate for their time and let them know the interview has concluded.`;
+        }
+      } else {
+        // Fallback if no questions are available
+        prompt = `The user said: "${transcript}"`;
+      }
+      
+      const result = await model.generateContent(prompt);
       const response = await result.response;
-      const assistantText = response.text();
+      assistantText = response.text();
   
       console.log("Gemini Response:", assistantText);
   
-      // Update the UI
-      setConversation(prev => [...prev, { role: 'assistant', content: assistantText }]);
+      // Update conversation with user's input and assistant's response
+      setConversation(prev => [
+        ...prev,
+        { role: 'assistant', content: assistantText }
+      ]);
+      
+      // Move to next question if not complete
+      if (questions && questions.length > 0) {
+        if (!isInterviewComplete && currentQuestionIndex < questions.length - 1) {
+          setCurrentQuestionIndex(prev => prev + 1);
+        } else if (!isInterviewComplete && currentQuestionIndex >= questions.length - 1) {
+          setIsInterviewComplete(true);
+        }
+      }
+      
       speakText(assistantText);
 
     } catch (error) {
@@ -411,10 +477,20 @@ export default function SpeechRecognitionComponent() {
 
   return (
     <div className="flex flex-col min-h-screen">
-    {/* 🔵 Top Bar */}
-    <div className="bg-purple-700 text-white text-lg font-semibold px-6 py-4 shadow-md">
-      PrepWise
-    </div>
+      {/* 🔵 Top Bar */}
+      <div className="bg-purple-700 text-white text-lg font-semibold px-6 py-4 shadow-md flex justify-between items-center">
+        <span>PrepWise Interview</span>
+        {isInterviewStarted && !isInterviewComplete && (
+          <span className="text-sm font-normal">
+            Question {currentQuestionIndex + 1} of {questions.length}
+          </span>
+        )}
+        {isInterviewComplete && (
+          <span className="text-sm font-normal bg-green-100 text-green-800 px-3 py-1 rounded-full">
+            Interview Complete
+          </span>
+        )}
+      </div>
 
     {/* Main Layout */}
     <div className="flex flex-col md:flex-row flex-1 bg-white">
@@ -425,10 +501,30 @@ export default function SpeechRecognitionComponent() {
         <img src="/aiavatar.png" alt="AI Avatar" className="w-full h-full object-contain mt-8" />
         </div>
 
-        {/* Speak Button */}
-        <div className="mt-6">
-          <Button  onClick={startRecording} className="text-lg px-6 py-2">🎙️ Speak</Button>
-        </div>
+        {!isInterviewStarted ? (
+          <div className="text-center p-8">
+            <h2 className="text-2xl font-bold mb-4">Ready for your interview?</h2>
+            <p className="mb-6 text-gray-600">
+              {questions.length} questions prepared. Click below to begin.
+            </p>
+            <Button 
+              onClick={startInterview} 
+              className="text-lg px-8 py-6 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white text-xl font-semibold rounded-xl shadow-lg transform transition-all hover:scale-105"
+            >
+              🎤 Start Interview
+            </Button>
+          </div>
+        ) : (
+          <div className="mt-6">
+            <Button 
+              onClick={startRecording} 
+              disabled={isProcessing}
+              className={`text-lg px-6 py-2 ${isProcessing ? 'bg-gray-400' : 'bg-purple-600 hover:bg-purple-700'}`}
+            >
+              {isProcessing ? 'Processing...' : '🎙️ Speak'}
+            </Button>
+          </div>
+        )}
 
         {/* Recording Video Box */}
         {/* <div className="absolute top-4 right-4">
