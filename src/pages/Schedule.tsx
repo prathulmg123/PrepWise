@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
 import { Button } from '@/components/ui/button';
 import { useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from '@/components/Sidebar';
@@ -66,9 +67,66 @@ const Schedule: React.FC = () => {
     return fallbackQuestions.length > 0 ? fallbackQuestions : [];
   };
 
+  // Validate job description content
+  const validateJobDescription = (description: string): { isValid: boolean; message: string } => {
+    const trimmedDesc = description.trim();
+    
+    // Check minimum length
+    if (trimmedDesc.length < 50) {
+      return { 
+        isValid: false, 
+        message: "Job description is too short. Please provide more details about the position." 
+      };
+    }
+
+    // Check for meaningful content (at least 3 words that are not too common)
+    const words = trimmedDesc.split(/\s+/).filter(word => word.length > 3);
+    const uniqueWords = new Set(words);
+    
+    if (uniqueWords.size < 5) {
+      return {
+        isValid: false,
+        message: "Please provide a more detailed job description with specific requirements and responsibilities."
+      };
+    }
+
+    // Check for common placeholder text
+    const placeholders = [
+      'enter job description',
+      'paste job description',
+      'job description here',
+      'lorem ipsum',
+      'sample text',
+      'test description'
+    ];
+
+    const lowerDesc = trimmedDesc.toLowerCase();
+    if (placeholders.some(placeholder => lowerDesc.includes(placeholder))) {
+      return {
+        isValid: false,
+        message: "The job description appears to contain placeholder text. Please enter the actual job description."
+      };
+    }
+
+    return { isValid: true, message: '' };
+  };
+
   const handleAnalyze = async () => {
-    if (!resumeFile || !jobDescription.trim()) {
-      alert("Please upload a resume and enter job description.");
+    // Basic validation
+    if (!resumeFile) {
+      alert("Please upload a resume file.");
+      return;
+    }
+
+    if (!jobDescription.trim()) {
+      alert("Please enter a job description.");
+      return;
+    }
+
+    // Advanced job description validation
+    const validation = validateJobDescription(jobDescription);
+    if (!validation.isValid) {
+      alert(validation.message);
       return;
     }
   
@@ -79,33 +137,61 @@ const Schedule: React.FC = () => {
       reader.onload = async () => {
         try {
           const base64 = (reader.result as string).split(',')[1];
-          const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-          const prompt = `
-          You are an intelligent HR assistant.
+          const model = genAI.getGenerativeModel({ 
+            model: "gemini-2.0-flash",
+            generationConfig: {
+              temperature: 0.7,
+              topP: 0.95,
+              topK: 40,
+              maxOutputTokens: 2048,
+            },
+            safetySettings: [
+              {
+                category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+                threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+              },
+              {
+                category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+              },
+              {
+                category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+              },
+              {
+                category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+              },
+            ],
+          });
           
-          Compare the resume with the job description and give a detailed analysis including:
-          - Overall assessment
-          - Skill match
-          - Experience relevance
-          - Strengths and areas for improvement
-          - Education and project fit
-          - A final verdict on the candidate's suitability
-          
-          Also, provide 5 interview questions that could be asked during the interview, based on the resume and job description. 
-          
-          Important:
-          - Number the interview questions from 1 to 5.
-          - Do not format the interview questions with  asterisks.
-          - Present the questions as plain text, each separated by a line break.
-          - Make the overall analysis sectioned and professional.
-          `;
-          
-          
-          // const prompt = `You are an intelligent HR assistant.\nCompare the resume with the job description and give a detailed analysis.`;
+          const prompt = `You are an intelligent HR assistant. Analyze the following job description and resume to provide a professional assessment.
+
+Job Description:
+${jobDescription}
+
+Please provide:
+1. A detailed analysis of the candidate's fit for this role
+2. Key skills and experiences that match the job requirements
+3. Any potential gaps or areas for development
+4. 5 specific interview questions (each question should be 1-3 lines maximum, plain text with no symbols or special formatting)
+
+Format your response with clear sections and numbered questions. Keep the questions simple, direct, and free of any symbols or special characters.`;
   
           const result = await model.generateContent({
             contents: [
-              { role: 'user', parts: [{ text: prompt + "\n\nJob Description:\n" + jobDescription }] },
+              { 
+                role: 'user', 
+                parts: [{ 
+                  text: prompt,
+                }] 
+              },
+              {
+                role: 'model',
+                parts: [{
+                  text: "I've received the job description. Please provide the resume for analysis."
+                }]
+              },
               {
                 role: 'user',
                 parts: [
@@ -121,24 +207,37 @@ const Schedule: React.FC = () => {
           });
   
           const geminiOutput = await result.response.text();
+          
+          // Additional validation of the response
+          if (!geminiOutput || geminiOutput.trim().length < 100) {
+            throw new Error("The response from the AI was incomplete or invalid.");
+          }
+          
           setGeminiResponse(geminiOutput);
           
           // Extract interview questions from the response
           const questions = extractInterviewQuestions(geminiOutput);
+          if (questions.length === 0) {
+            console.warn("No interview questions could be extracted from the response.");
+          }
           setInterviewQuestions(questions);
         } catch (err) {
-          console.error("Gemini failed:", err);
-          alert("Failed to analyze resume.");
+          console.error("Analysis failed:", err);
+          alert(`Failed to analyze resume: ${err instanceof Error ? err.message : 'Unknown error'}`);
         } finally {
-          setIsAnalyzing(false); // ✅ Now in the right place
+          setIsAnalyzing(false);
         }
+      };
+  
+      reader.onerror = () => {
+        throw new Error("Failed to read the resume file. Please try again.");
       };
   
       reader.readAsDataURL(resumeFile);
     } catch (error) {
-      console.error("File read failed:", error);
-      alert("Something went wrong.");
-      setIsAnalyzing(false); // In case readAsDataURL itself fails
+      console.error("Analysis process failed:", error);
+      alert(`Error: ${error instanceof Error ? error.message : 'An unknown error occurred'}`);
+      setIsAnalyzing(false);
     }
   };
   
@@ -213,7 +312,7 @@ const Schedule: React.FC = () => {
             <div className="mt-8 bg-white rounded-3xl shadow-lg border border-[#5B2EC4]/30 p-8">
     <h3 className="text-2xl font-bold text-[#5B2EC4] mb-6 flex items-center gap-2">
       <FaFile className="text-[#5B2EC4]" />
-      Gemini Resume Analysis
+      Resume Analysis
     </h3>
     <div className="space-y-6 text-gray-800 text-base leading-relaxed">
       {geminiResponse.split('\n\n').map((block, i) => (

@@ -247,44 +247,63 @@ export default function SpeechRecognitionComponent() {
         // General conversation after interview
         prompt = `The user said: "${transcript}"`;
       } else if (questions && questions.length > 0) {
-        // Interview mode - just move to next question
+        // Interview mode - analyze response and provide feedback
+        const currentQuestion = questions[currentQuestionIndex];
+        
+        // First, analyze the candidate's response
+        const feedbackPrompt = `You are conducting a job interview. The candidate was asked: "${currentQuestion}"
+        
+        The candidate responded: "${transcript}"
+        
+        Please provide a brief (1-2 sentence) acknowledgment or feedback on their response. Be professional and empathetic, especially if they seem unsure. For example, if they say "I don't know," you might say "That's okay, let's move on to the next question."`;
+        
+        const feedbackResult = await model.generateContent(feedbackPrompt);
+        const feedbackResponse = await feedbackResult.response;
+        const feedbackText = feedbackResponse.text();
+        
+        // Add feedback to conversation
+        setConversation(prev => [
+          ...prev,
+          { role: 'assistant', content: feedbackText }
+        ]);
+        await speakText(feedbackText);
+        
+        // Then prepare next question if there are more
         if (currentQuestionIndex < questions.length - 1) {
-          // If there are more questions, prepare the next one
-          const nextQuestion = questions[Math.min(currentQuestionIndex + 1, questions.length - 1)];
-          prompt = `The candidate responded to the previous question. 
+          // Small delay before next question
+          await new Promise(resolve => setTimeout(resolve, 1000));
           
-Now ask this question in a natural, conversational way: "${nextQuestion}"`;
+          const nextQuestion = questions[Math.min(currentQuestionIndex + 1, questions.length - 1)];
+          prompt = `Ask this interview question in a natural, conversational way: "${nextQuestion}"`;
+          
+          const questionResult = await model.generateContent(prompt);
+          const questionResponse = await questionResult.response;
+          assistantText = questionResponse.text();
+          
+          // Update to next question index after getting the response
+          setCurrentQuestionIndex(prev => prev + 1);
         } else {
           // No more questions
-          prompt = `The interview is complete. Thank the candidate for their time and let them know the interview has concluded.`;
+          assistantText = "Thank you for your responses. This concludes our interview. Do you have any questions for us?";
+          setIsInterviewComplete(true);
         }
       } else {
         // Fallback if no questions are available
         prompt = `The user said: "${transcript}"`;
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        assistantText = response.text();
       }
       
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      assistantText = response.text();
-  
-      console.log("Gemini Response:", assistantText);
-  
-      // Update conversation with user's input and assistant's response
-      setConversation(prev => [
-        ...prev,
-        { role: 'assistant', content: assistantText }
-      ]);
-      
-      // Move to next question if not complete
-      if (questions && questions.length > 0) {
-        if (!isInterviewComplete && currentQuestionIndex < questions.length - 1) {
-          setCurrentQuestionIndex(prev => prev + 1);
-        } else if (!isInterviewComplete && currentQuestionIndex >= questions.length - 1) {
-          setIsInterviewComplete(true);
-        }
+      if (assistantText) {
+        // Add assistant's response to conversation
+        setConversation(prev => [
+          ...prev,
+          { role: 'assistant', content: assistantText }
+        ]);
+        
+        speakText(assistantText);
       }
-      
-      speakText(assistantText);
 
     } catch (error) {
       console.error("Gemini Error:", error);
@@ -476,53 +495,62 @@ Now ask this question in a natural, conversational way: "${nextQuestion}"`;
   };
 
   return (
-    <div className="flex flex-col min-h-screen">
-      {/* 🔵 Top Bar */}
-      <div className="bg-purple-700 text-white text-lg font-semibold px-6 py-4 shadow-md flex justify-between items-center">
-        <span>PrepWise Interview</span>
+    <div className="flex flex-col h-screen bg-gradient-to-b from-[#31275e] to-[#9168f0]">
+
+    {/* // <div className="flex flex-col min-h-screen bg-gradient-to-b from-[#31275e] to-[#9168f0]"> */}
+      {/* Top Bar */}
+      <div className="bg-gradient-to-r from-purple-800 to-indigo-900 text-white text-lg font-semibold px-8 py-4 shadow-lg flex justify-between items-center">
+        <div className="flex items-center">
+          <img src="/logo.svg" alt="logo" className="w-8 h-8 mr-3" />
+          <span className="text-xl font-bold">PrepWise Interview</span>
+        </div>
         {isInterviewStarted && !isInterviewComplete && (
-          <span className="text-sm font-normal">
+          <span className="text-sm font-light bg-white/20 backdrop-blur-sm px-4 py-1 rounded-full">
             Question {currentQuestionIndex + 1} of {questions.length}
           </span>
         )}
         {isInterviewComplete && (
-          <span className="text-sm font-normal bg-green-100 text-green-800 px-3 py-1 rounded-full">
+          <span className="text-sm font-light bg-green-500/20 backdrop-blur-sm text-white px-4 py-1 rounded-full border border-green-400/50">
             Interview Complete
           </span>
         )}
       </div>
 
     {/* Main Layout */}
-    <div className="flex flex-col md:flex-row flex-1 bg-white">
+    <div className="flex flex-col md:flex-row flex-1 min-h-0 bg-white/10 backdrop-blur-sm">
       {/* 🤖 Bot Section */}
-      <div className="w-full md:w-1/2 flex flex-col items-center justify-center bg-purple-100 p-8 relative">
+      <div className="w-full md:w-1/2 p-8 flex flex-col items-center justify-center relative overflow-auto">
         {/* Bot Icon */}
-        <div className="w-64 h-64 bg-white rounded-full shadow-xl flex items-center justify-center relative">
-        <img src="/aiavatar.png" alt="AI Avatar" className="w-full h-full object-contain mt-8" />
+        <div className="w-64 h-64 bg-white/5 backdrop-blur-md rounded-full shadow-2xl flex items-center justify-center relative border-2 border-white/20">
+          <img src="/aiavatar.png" alt="AI Avatar" className="w-full h-full object-contain mt-8" />
         </div>
 
         {!isInterviewStarted ? (
           <div className="text-center p-8">
-            <h2 className="text-2xl font-bold mb-4">Ready for your interview?</h2>
-            <p className="mb-6 text-gray-600">
+            <h2 className="text-2xl font-bold mb-4 text-white">Ready for your interview?</h2>
+            <p className="mb-6 text-white/80">
               {questions.length} questions prepared. Click below to begin.
             </p>
-            <Button 
+            <button 
               onClick={startInterview} 
-              className="text-lg px-8 py-6 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white text-xl font-semibold rounded-xl shadow-lg transform transition-all hover:scale-105"
+              className="text-lg px-10 py-6 bg-gradient-to-r from-purple-600 to-indigo-700 hover:from-purple-700 hover:to-indigo-800 text-white text-xl font-semibold rounded-full shadow-xl transform transition-all hover:scale-105 hover:shadow-2xl focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2 focus:ring-offset-purple-900"
             >
               🎤 Start Interview
-            </Button>
+            </button>
           </div>
         ) : (
-          <div className="mt-6">
-            <Button 
+          <div className="mt-8">
+            <button 
               onClick={startRecording} 
               disabled={isProcessing}
-              className={`text-lg px-6 py-2 ${isProcessing ? 'bg-gray-400' : 'bg-purple-600 hover:bg-purple-700'}`}
+              className={`text-lg px-8 py-3 rounded-full shadow-lg transform transition-all ${
+                isProcessing 
+                  ? 'bg-gray-400 cursor-not-allowed' 
+                  : 'bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 hover:shadow-xl hover:scale-105 text-white'
+              }`}
             >
-              {isProcessing ? 'Processing...' : '🎙️ Speak'}
-            </Button>
+              {isProcessing ? 'Processing...' : '🎙️ Speak Now'}
+            </button>
           </div>
         )}
 
@@ -542,23 +570,26 @@ Now ask this question in a natural, conversational way: "${nextQuestion}"`;
       </div>
 
       {/* 💬 Chat Section */}
-      <div className="w-full md:w-1/2 h-full overflow-y-auto px-6 py-8 space-y-4 relative">
+      <div className="w-full md:w-1/2 flex flex-col h-full overflow-hidden bg-white/5 backdrop-blur-sm border-l border-white/10">
+
+        <div className="flex-1 overflow-y-auto px-6 py-8 space-y-4">
         {conversation.map((msg, index) => (
           <div key={index} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
             <div
-              className={`max-w-[80%] rounded-xl px-4 py-3 shadow-md text-sm whitespace-pre-wrap ${
+              className={`max-w-[80%] rounded-2xl px-5 py-3 text-sm whitespace-pre-wrap backdrop-blur-sm ${
                 msg.role === "user"
-                  ? "bg-gray-100 text-gray-800"
-                  : "bg-purple-100 text-purple-800"
+                  ? "bg-white/90 text-gray-800 shadow-md"
+                  : "bg-white/10 text-white border border-white/20 shadow-lg"
               }`}
             >
-              <p>{msg.content}</p>
+              <p className="leading-relaxed">{msg.content}</p>
             </div>
           </div>
         ))}
 
+        </div>
         {/* End Message Note */}
-        <div className="text-center text-xs text-gray-500 pt-4 border-t border-gray-200 mt-6">
+        <div className="text-center text-xs text-white/70 p-4 border-t border-white/20">
           Click this button only if you have completed the interview.<br />
           Once clicked, the interview will end and cannot be resumed.
         </div>
@@ -567,5 +598,6 @@ Now ask this question in a natural, conversational way: "${nextQuestion}"`;
   </div>
   );
 };
+
 
 
